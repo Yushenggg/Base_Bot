@@ -1,8 +1,6 @@
 import asyncio
 import logging
 import shutil
-import time
-from pathlib import Path
 from typing import Literal
 
 from telegram import Update
@@ -12,6 +10,7 @@ from telegram.ext import ContextTypes
 from core.agents import verify_working_code
 from core.config import app_config, WORKING_DIR, BACKUP_DIR
 from core.core_agent import CoreAgent
+from core.session_manager import SessionManager
 from core.telegram_worker.auth import RoleResolver
 
 logger = logging.getLogger("HANDLERS")
@@ -57,22 +56,9 @@ class BotHandlers:
         self.agent = agent
         self.auth = auth
         self._reload_callback = reload_callback
-        self._session_memory: dict[int, list[dict]] = {}
-        self._session_activity: dict[int, float] = {}
-        self._edit_states: dict[int, dict] = {}
-        self._MAX_SESSIONS = 500
-        self._EDIT_TIMEOUT = 1800
+        self.sessions = SessionManager()
 
     # ── Top-level dispatchers ──────────────────────────────────────
-
-    def _touch_session(self, chat_id: int):
-        now = time.time()
-        self._session_activity[chat_id] = now
-        if len(self._session_memory) > self._MAX_SESSIONS:
-            oldest = min(self._session_activity, key=self._session_activity.get)
-            self._session_memory.pop(oldest, None)
-            self._session_activity.pop(oldest, None)
-            self._edit_states.pop(oldest, None)
 
     async def handle_start(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE,
@@ -97,8 +83,8 @@ class BotHandlers:
         chat_id = update.effective_chat.id
         kind = _get_update_kind(update)
 
-        edit_state = self._edit_states.get(chat_id)
-        if edit_state and edit_state["state"] == "planning":
+        edit_state = await self.sessions.get_edit_state(chat_id)
+        if edit_state and edit_state.phase == "planning":
             await self._handle_planning_response(chat_id, update, context)
             return
 
@@ -147,9 +133,7 @@ class BotHandlers:
 
         await self._reply(chat_id, context, "✏️ Working on it...")
 
-        history = self._session_memory.setdefault(chat_id, [])
-        self._touch_session(chat_id)
-        history.append({"role": "user", "content": f"/edit {instruction}"})
+        history = await self.sessions.append_message(chat_id, "user", f"/edit {instruction}")
 
         plan = await self._with_typing(
             chat_id, context,
@@ -160,12 +144,12 @@ class BotHandlers:
             return
 
         history.append({"role": "assistant", "content": plan})
-        self._edit_states[chat_id] = {
-            "state": "planning",
-            "instruction": instruction,
-            "planner_history": history.copy(),
-            "started_at": time.time(),
-        }
+        await self.sessions.set_edit_state(
+            chat_id,
+            phase="planning",
+            instruction=instruction,
+            planner_history=list(history),
+        )
         await self._reply(chat_id, context, plan)
 
     # ── Text processing (Standard Agent) ────────────────────────────
@@ -174,9 +158,7 @@ class BotHandlers:
         self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE,
     ):
         text = update.effective_message.text
-        history = self._session_memory.setdefault(chat_id, [])
-        self._touch_session(chat_id)
-        history.append({"role": "user", "content": text})
+        history = await self.sessions.append_message(chat_id, "user", text)
 
         reply = await self._with_typing(
             chat_id, context,
@@ -186,8 +168,7 @@ class BotHandlers:
             reply = "Sorry, I had trouble processing that. Please try again."
 
         history.append({"role": "assistant", "content": reply})
-        if len(history) > 50:
-            history[:] = history[-50:]
+        await self.sessions.append_message(chat_id, "assistant", reply)
         await self._reply(chat_id, context, reply)
 
     # ── /edit planning loop ─────────────────────────────────────────
@@ -195,23 +176,21 @@ class BotHandlers:
     async def _handle_planning_response(
         self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE,
     ):
-        state = self._edit_states[chat_id]
-
-        if time.time() - state.get("started_at", 0) > self._EDIT_TIMEOUT:
-            del self._edit_states[chat_id]
+        state = await self.sessions.get_edit_state(chat_id)
+        if state is None:
             await self._reply(chat_id, context, "⏰ Planning session timed out. Start a new /edit if needed.")
             return
 
-        history = state["planner_history"]
+        history = list(state.planner_history)
         user_text = update.effective_message.text
         history.append({"role": "user", "content": user_text})
 
         if user_text.strip().lower() in ("go", "execute", "yes", "confirmed", "do it", "proceed"):
-            del self._edit_states[chat_id]
+            await self.sessions.clear_edit_state(chat_id)
             await self._reply(chat_id, context, "⚙️ Executing code mutation...")
 
             self._backup_working()
-            instruction = state["instruction"]
+            instruction = state.instruction
 
             code_result = await self._with_typing(
                 chat_id, context,
@@ -255,10 +234,16 @@ class BotHandlers:
                 await self._reply(
                     chat_id, context, "❌ Planning failed.",
                 )
-                del self._edit_states[chat_id]
+                await self.sessions.clear_edit_state(chat_id)
                 return
 
             history.append({"role": "assistant", "content": reply})
+            await self.sessions.set_edit_state(
+                chat_id,
+                phase="planning",
+                instruction=state.instruction,
+                planner_history=history,
+            )
             await self._reply(chat_id, context, reply)
 
     # ── Safety helpers (backup / restore) ────────────────────────────
