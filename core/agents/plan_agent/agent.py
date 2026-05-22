@@ -3,7 +3,7 @@ import logging
 from langchain.agents import create_agent
 
 from core.agents.logging_handler import ToolLoggingHandler
-from core.agents.tools import read_workspace_file_tool
+from core.agents.tools import duckduckgo_search_tool, read_site_tool, read_workspace_file_tool
 
 logger = logging.getLogger("PLAN_AGENT")
 _tool_logger = ToolLoggingHandler()
@@ -26,8 +26,10 @@ SYSTEM_PROMPT = (
     "  └─ Each file must export: def create_tool(llm) -> BaseTool\n"
     "  └─ create_tool receives a ChatOpenAI instance, creates its own agent, "
     "and returns a @tool that wraps it\n"
-    "- You have read_workspace_file_tool — use it to inspect existing code "
-    "in /working/ before planning so you understand the current structure."
+    "- Tools:\n"
+    "  - read_workspace_file_tool — inspect existing code in /working/\n"
+    "  - duckduckgo_search_tool — search the web for additional context\n"
+    "  - read_site_tool — fetch and read the content of a specific URL"
 )
 
 
@@ -37,7 +39,7 @@ class PlanAgent:
         self.agent = create_agent(
             model=self.llm,
             system_prompt=SYSTEM_PROMPT,
-            tools=[read_workspace_file_tool],
+            tools=[read_workspace_file_tool, duckduckgo_search_tool, read_site_tool],
         )
 
     async def ainvoke(self, messages: list[dict]) -> str:
