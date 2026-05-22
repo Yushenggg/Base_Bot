@@ -1,9 +1,7 @@
 import asyncio
-import importlib
 import logging
-import os
 import shutil
-import sys
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -11,6 +9,7 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
+from core.agents import verify_working_code
 from core.config import app_config, WORKING_DIR, BACKUP_DIR
 from core.core_agent import CoreAgent
 from core.telegram_worker.auth import RoleResolver
@@ -54,13 +53,26 @@ def _get_update_kind(update: Update) -> UpdateKind:
 
 
 class BotHandlers:
-    def __init__(self, agent: CoreAgent, auth: RoleResolver):
+    def __init__(self, agent: CoreAgent, auth: RoleResolver, reload_callback=None):
         self.agent = agent
         self.auth = auth
+        self._reload_callback = reload_callback
         self._session_memory: dict[int, list[dict]] = {}
+        self._session_activity: dict[int, float] = {}
         self._edit_states: dict[int, dict] = {}
+        self._MAX_SESSIONS = 500
+        self._EDIT_TIMEOUT = 1800
 
     # ── Top-level dispatchers ──────────────────────────────────────
+
+    def _touch_session(self, chat_id: int):
+        now = time.time()
+        self._session_activity[chat_id] = now
+        if len(self._session_memory) > self._MAX_SESSIONS:
+            oldest = min(self._session_activity, key=self._session_activity.get)
+            self._session_memory.pop(oldest, None)
+            self._session_activity.pop(oldest, None)
+            self._edit_states.pop(oldest, None)
 
     async def handle_start(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE,
@@ -85,7 +97,6 @@ class BotHandlers:
         chat_id = update.effective_chat.id
         kind = _get_update_kind(update)
 
-        # If the user is in an active /edit planning session, route to planner
         edit_state = self._edit_states.get(chat_id)
         if edit_state and edit_state["state"] == "planning":
             await self._handle_planning_response(chat_id, update, context)
@@ -137,6 +148,7 @@ class BotHandlers:
         await self._reply(chat_id, context, "✏️ Working on it...")
 
         history = self._session_memory.setdefault(chat_id, [])
+        self._touch_session(chat_id)
         history.append({"role": "user", "content": f"/edit {instruction}"})
 
         plan = await self._with_typing(
@@ -152,6 +164,7 @@ class BotHandlers:
             "state": "planning",
             "instruction": instruction,
             "planner_history": history.copy(),
+            "started_at": time.time(),
         }
         await self._reply(chat_id, context, plan)
 
@@ -162,6 +175,7 @@ class BotHandlers:
     ):
         text = update.effective_message.text
         history = self._session_memory.setdefault(chat_id, [])
+        self._touch_session(chat_id)
         history.append({"role": "user", "content": text})
 
         reply = await self._with_typing(
@@ -182,6 +196,12 @@ class BotHandlers:
         self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE,
     ):
         state = self._edit_states[chat_id]
+
+        if time.time() - state.get("started_at", 0) > self._EDIT_TIMEOUT:
+            del self._edit_states[chat_id]
+            await self._reply(chat_id, context, "⏰ Planning session timed out. Start a new /edit if needed.")
+            return
+
         history = state["planner_history"]
         user_text = update.effective_message.text
         history.append({"role": "user", "content": user_text})
@@ -193,40 +213,26 @@ class BotHandlers:
             self._backup_working()
             instruction = state["instruction"]
 
-            for attempt in range(1, 4):
-                code_result = await self._with_typing(
-                    chat_id, context,
-                    self.agent.ainvoke_code(instruction, history),
-                )
-                if not code_result or not code_result.strip():
-                    self._restore_working()
-                    await self._reply(
-                        chat_id, context,
-                        "❌ Code Agent returned empty — no changes made. Rolled back.",
-                    )
-                    return
-
-                error = self._run_smoke_test()
-                if not error:
-                    break
-
+            code_result = await self._with_typing(
+                chat_id, context,
+                self.agent.ainvoke_code(instruction, history),
+            )
+            if not code_result or not code_result.strip():
                 self._restore_working()
-                if attempt < 3:
-                    await self._reply(
-                        chat_id, context,
-                        f"⚠️ Attempt {attempt} failed. Retrying ({attempt}/3)...\n```\n{error}\n```",
-                    )
-                    instruction = (
-                        f"Previous attempt failed with this error:\n{error}\n\n"
-                        f"Fix the error and try again.\n\n"
-                        f"Original request: {state['instruction']}"
-                    )
-                else:
-                    await self._reply(
-                        chat_id, context,
-                        f"❌ All 3 attempts failed. Rolled back.\n```\n{error}\n```",
-                    )
-                    return
+                await self._reply(
+                    chat_id, context,
+                    "❌ Code Agent returned empty — no changes made. Rolled back.",
+                )
+                return
+
+            error = verify_working_code(WORKING_DIR)
+            if error:
+                self._restore_working()
+                await self._reply(
+                    chat_id, context,
+                    f"❌ Code verification failed. Rolled back.\n```\n{error}\n```",
+                )
+                return
 
             history.append({
                 "role": "assistant",
@@ -234,10 +240,12 @@ class BotHandlers:
             })
             await self._reply(
                 chat_id, context,
-                f"✅ Mutation successful. Restarting...\n\n{code_result}",
+                f"✅ Mutation successful. Reloading in-process...\n\n{code_result}",
             )
-            logger.info("Mutation successful. Restarting via os.execv.")
-            os.execv(sys.executable, [sys.executable, "-m", "core.main_telegram_bot"])
+            logger.info("Mutation successful. Reloading bot components in-process.")
+            if self._reload_callback:
+                self._reload_callback()
+            await self._reply(chat_id, context, "🔄 Reload complete. New handlers and tools are now active.")
         else:
             reply = await self._with_typing(
                 chat_id, context,
@@ -253,7 +261,7 @@ class BotHandlers:
             history.append({"role": "assistant", "content": reply})
             await self._reply(chat_id, context, reply)
 
-    # ── Safety helpers (backup / restore / smoke test) ──────────────
+    # ── Safety helpers (backup / restore) ────────────────────────────
 
     def _backup_working(self):
         if BACKUP_DIR.exists():
@@ -266,25 +274,6 @@ class BotHandlers:
             shutil.rmtree(WORKING_DIR)
         if BACKUP_DIR.exists():
             shutil.copytree(BACKUP_DIR, WORKING_DIR, dirs_exist_ok=True)
-
-    def _run_smoke_test(self):
-        for subdir in ("handlers", "tools", "subagents"):
-            d = WORKING_DIR / subdir
-            if not d.exists():
-                continue
-            for f in d.glob("*.py"):
-                if f.name == "__init__.py":
-                    continue
-                module_name = f"working.{subdir}.{f.stem}"
-                try:
-                    importlib.import_module(module_name)
-                except SyntaxError as e:
-                    return f"{f.name}: SyntaxError — {e}"
-                except ImportError as e:
-                    return f"{f.name}: ImportError — {e}"
-                except Exception as e:
-                    return f"{f.name}: {type(e).__name__} — {e}"
-        return None
 
     # ── Utilities ───────────────────────────────────────────────────
 

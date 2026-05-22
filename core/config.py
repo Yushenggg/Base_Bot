@@ -16,8 +16,7 @@ class AppConfig(BaseSettings):
     )
 
     telegram_token: str = Field(..., alias="TELEGRAM_TOKEN")
-    admin_users: list[int] = Field(default_factory=list, alias="ADMIN_USERS")
-    allowed_users: list[int] = Field(default_factory=list, alias="ALLOWED_USERS")
+    authorized_user: int | None = Field(default=None, alias="AUTHORIZED_USER")
 
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
