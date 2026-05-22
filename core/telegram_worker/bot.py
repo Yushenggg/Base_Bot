@@ -1,9 +1,10 @@
+import asyncio
 import importlib
 import logging
 import os
 import sys
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -20,6 +21,17 @@ from core.telegram_worker.handlers import BotHandlers
 logger = logging.getLogger("BOT")
 
 
+STATIC_COMMANDS = [
+    BotCommand("start", "Start the bot"),
+    BotCommand("edit", "Create or modify code in the workspace"),
+    BotCommand("restart_bot", "Restart the bot process"),
+]
+
+
+async def _register_commands(application, bot_ref):
+    await bot_ref._register_all_commands()
+
+
 class TeleBaseBot:
     def __init__(self):
         self.agent = CoreAgent()
@@ -29,9 +41,11 @@ class TeleBaseBot:
             ApplicationBuilder()
             .token(app_config.telegram_token)
             .concurrent_updates(True)
+            .post_init(lambda app: _register_commands(app, self))
             .build()
         )
         self._loaded_handler_modules: set[str] = set()
+        self._loaded_handler_commands: dict[str, list[BotCommand]] = {}
         self._setup()
 
     def _setup(self):
@@ -73,6 +87,9 @@ class TeleBaseBot:
                         "working_dir": WORKING_DIR,
                     })
                     self._loaded_handler_modules.add(module_name)
+                    handler_commands = getattr(module, "commands", [])
+                    if handler_commands:
+                        self._loaded_handler_commands[module_name] = handler_commands
                     logger.info("Loaded handler module: %s", module_name)
                 else:
                     logger.warning(
@@ -88,6 +105,14 @@ class TeleBaseBot:
         self.agent.reload_standard_tools()
         logger.info("Reload complete — %d handler modules, %d tools",
                      len(self._loaded_handler_modules), len(self.agent.standard.tools))
+        asyncio.create_task(self._register_all_commands())
+
+    async def _register_all_commands(self):
+        all_commands = list(STATIC_COMMANDS)
+        for module_name, commands in self._loaded_handler_commands.items():
+            all_commands.extend(commands)
+        await self.application.bot.set_my_commands(all_commands)
+        logger.info("Registered %d bot commands for auto-completion", len(all_commands))
 
     def run(self):
         logger.info("Starting TeleBaseBot")
