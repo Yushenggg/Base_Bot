@@ -1,5 +1,10 @@
+from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+WORKING_DIR = Path(__file__).resolve().parent.parent / "working"
+BACKUP_DIR = Path(__file__).resolve().parent.parent / "backup" / "working"
 
 
 class AppConfig(BaseSettings):
@@ -10,25 +15,19 @@ class AppConfig(BaseSettings):
         case_sensitive=False,
     )
 
-    # Telegram
     telegram_token: str = Field(..., alias="TELEGRAM_TOKEN")
-    admin_users: list[int] = Field(default_factory=list, alias="ADMIN_USERS")
-    allowed_users: list[int] = Field(default_factory=list, alias="ALLOWED_USERS")
+    authorized_user: int | None = Field(default=None, alias="AUTHORIZED_USER")
 
-    # Agent
     openai_base_url: str | None = Field(default=None, alias="OPENAI_BASE_URL")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     default_model: str | None = Field(default=None, alias="DEFAULT_MODEL")
 
-    # Session
     default_idle_timeout_seconds: int = Field(
         default=300, alias="DEFAULT_IDLE_TIMEOUT_SECONDS"
     )
 
-    # Database
     database_path: str = Field(default="./telebasebot.db", alias="DATABASE_PATH")
 
-    # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_format: str = Field(default="console", alias="LOG_FORMAT")
 
