@@ -4,9 +4,11 @@ import logging
 from langchain.agents import create_agent
 from langchain_core.tools import BaseTool
 
+from core.agents.logging_handler import ToolLoggingHandler
 from core.config import WORKING_DIR
 
 logger = logging.getLogger("STANDARD_AGENT")
+_tool_logger = ToolLoggingHandler()
 
 SYSTEM_PROMPT = (
     "You are a helpful AI assistant running on Telegram. "
@@ -45,8 +47,18 @@ class StandardAgent:
         return tools
 
     async def ainvoke(self, messages: list[dict]) -> str:
-        result = await self.agent.ainvoke({"messages": messages})
-        return self._extract_reply(result)
+        logger.info(
+            "Invoking with %d messages, last: %.100s",
+            len(messages),
+            messages[-1].get("content", "") if messages else "",
+        )
+        result = await self.agent.ainvoke(
+            {"messages": messages},
+            config={"callbacks": [_tool_logger]},
+        )
+        reply = self._extract_reply(result)
+        logger.info("Response: %.200s", reply)
+        return reply
 
     @staticmethod
     def _extract_reply(result: dict) -> str:

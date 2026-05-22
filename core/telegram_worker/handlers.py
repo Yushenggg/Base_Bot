@@ -186,7 +186,7 @@ class BotHandlers:
         user_text = update.effective_message.text
         history.append({"role": "user", "content": user_text})
 
-        if user_text.strip().lower() in ("go", "execute", "yes", "confirmed", "do it"):
+        if user_text.strip().lower() in ("go", "execute", "yes", "confirmed", "do it", "proceed"):
             del self._edit_states[chat_id]
             await self._reply(chat_id, context, "⚙️ Executing code mutation...")
 
