@@ -10,7 +10,7 @@ logger = logging.getLogger("FILE_TOOLS")
 
 @tool
 def read_workspace_file_tool(file_path: str) -> str:
-    """Read a file from the workspace. Path must be within /working/."""
+    """Read a file or list a directory in the workspace. Path must be within /working/."""
     abs_path = Path(file_path).resolve()
     logger.info("read_tool path=%s resolved=%s", file_path, abs_path)
     if not str(abs_path).startswith(str(WORKING_DIR)):
@@ -19,6 +19,14 @@ def read_workspace_file_tool(file_path: str) -> str:
     if not abs_path.exists():
         logger.warning("read_tool NOT FOUND: %s", abs_path)
         return f"Error: File not found: {file_path}"
+    if abs_path.is_dir():
+        items = sorted(
+            p.relative_to(abs_path).as_posix()
+            for p in abs_path.iterdir()
+        )
+        listing = "\n".join(items) if items else "(empty)"
+        logger.info("read_tool dir — %d entries in %s", len(items), abs_path)
+        return f"Contents of {abs_path.relative_to(WORKING_DIR.parent)}/:\n{listing}"
     content = abs_path.read_text(encoding="utf-8")
     logger.info("read_tool OK — %d bytes from %s", len(content), abs_path)
     return content
@@ -27,7 +35,7 @@ def read_workspace_file_tool(file_path: str) -> str:
 @tool
 def duckduckgo_search_tool(query: str) -> str:
     """Search the web using DuckDuckGo. Returns a summary of results."""
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 
     logger.info("search_tool query=%.200s", query)
     try:
