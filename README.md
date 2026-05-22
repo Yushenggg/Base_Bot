@@ -2,16 +2,10 @@
 
 > **⚠️ Work in Progress — This project is in development. Not for use in any hobby setting, much less production**
 
-TeleBaseBot is a lightweight Telegram bot foundation designed to be extended.
-It includes a small Telegram command pipeline, role-based access checks, basic session memory, and a pluggable agent layer powered by an OpenAI-compatible model backend.
+TeleBaseBot is a self-evolving Telegram bot that can modify its own code at runtime.
+It includes a three-agent system (StandardAgent for chat, PlanAgent for requirements, CodeAgent for code generation), hot-reloading of handlers and tools, and a backup/restore mechanism for safe code mutations.
 
-The goal of this project is not to be a finished product. It is a usable base bot you can build on:
-
-- add more Telegram commands and handlers
-- expand the role and permission model
-- swap or improve the agent backend
-- change the system prompt and toolset
-- add persistence, analytics, or admin controls
+It is designed for a single user. You talk to it, describe what you want it to do, and it writes the code into `working/` and activates it without restarting.
 
 ## Requirements
 
@@ -62,8 +56,7 @@ Minimum required values:
 
 ```dotenv
 TELEGRAM_TOKEN=your-telegram-bot-token
-ADMIN_USERS=[123456789]
-ALLOWED_USERS=[123456789,987654321]
+AUTHORIZED_USER=123456789
 OPENAI_BASE_URL=http://localhost:11434
 OPENAI_API_KEY=
 DEFAULT_MODEL=
@@ -73,7 +66,7 @@ Notes:
 
 - `OPENAI_BASE_URL` should point to the host of your OpenAI-compatible server.
 - The application normalizes this to the client API path when needed.
-- `ADMIN_USERS` and `ALLOWED_USERS` are JSON-style lists of Telegram user IDs.
+- `AUTHORIZED_USER` is a single Telegram user ID that is allowed to interact with the bot (for whitelist management, use a single ID).
 
 ## Run the Bot
 
@@ -88,19 +81,48 @@ If you want to run the agent module directly during development, you can also im
 ## Project Structure
 
 ```text
-main.py                         # Entry point
-config.py                       # Centralized application settings
-agent_framework/                # Agent and prompt logic
-telegram_bot/                   # Telegram app, middleware, commands, session store
+TeleBaseBot/
+├── main.py                     # Entry point
+├── core/                       # Core bot infrastructure (immutable)
+│   ├── config.py               # Application settings (env-based)
+│   ├── core_agent.py           # Agent orchestrator
+│   ├── session_manager.py      # Per-chat session memory and edit state
+│   ├── main_telegram_bot.py    # Telegram bot entry point
+│   ├── agents/
+│   │   ├── tools.py            # Shared tools (file read, web search, site fetch)
+│   │   ├── logging_handler.py  # Agent callback logger
+│   │   ├── standard_agent/     # Standard chat agent (uses working/tools)
+│   │   ├── plan_agent/         # Requirements planner agent
+│   │   └── code_agent/         # Code generation agent (writes to working/)
+│   └── telegram_worker/
+│       ├── bot.py              # TeleBaseBot class, command registration, hot-reload
+│       ├── handlers.py         # Message and command handlers
+│       └── auth.py             # Single-user authorization
+├── working/                    # User-extensible workspace (writable by CodeAgent)
+│   ├── handlers/               # Pluggable Telegram handlers
+│   ├── tools/                  # Pluggable agent tools
+│   └── subagents/              # Pluggable subagent tools
+├── backup/                     # Auto-backup of working/ during code mutations
 ```
 
 ## How It Works
 
-1. Telegram updates come into the bot.
+### Standard Chat
+1. Telegram updates come into the bot via handlers.
 2. Middleware logs the incoming message and applies role checks.
-3. Text messages are appended to a small session history.
-4. The agent receives the conversation history and generates a reply.
-5. The bot sends the reply back to Telegram and logs the outgoing response.
+3. Text messages are appended to a per-chat session history.
+4. The StandardAgent receives the conversation history and any loaded tools from `working/tools/`.
+5. The bot sends the reply back to Telegram.
+
+### Code Editing (`/edit`)
+1. User sends `/edit <description>` with a feature request.
+2. The PlanAgent refines the requirements through a brief conversation.
+3. Once confirmed (user replies "go"), the CodeAgent generates code into `working/`.
+4. The code is verified; if invalid, the previous state is restored from `backup/`.
+5. The bot performs an in-process hot-reload — new handlers and tools are activated without restarting.
+
+### Hot Reload
+The bot watches `working/handlers/`, `working/tools/`, and `working/subagents/`. When code is written there (either manually or by the CodeAgent), calling `reload()` reimports all modules in-process, updates the StandardAgent's toolset, and re-registers Telegram bot commands.
 
 ---
 
