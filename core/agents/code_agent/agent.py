@@ -78,9 +78,12 @@ def _build_graph(llm, system_prompt, tools, work_dir):
     tool_node = ToolNode(tools)
 
     def agent_node(state: _CodeState) -> dict:
-        bound = llm.bind_tools(tools)
         msgs = [SystemMessage(content=system_prompt)] + state["messages"]
-        response = bound.invoke(msgs)
+        if tools:
+            bound = llm.bind_tools(tools)
+            response = bound.invoke(msgs)
+        else:
+            response = llm.invoke(msgs)
         return {"messages": [response]}
 
     def verify_node(state: _CodeState) -> dict:

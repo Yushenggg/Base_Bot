@@ -51,9 +51,12 @@ class StandardAgent:
         tool_node = ToolNode(all_tools)
 
         def agent_node(state: _GraphState) -> dict:
-            bound = self.llm.bind_tools(all_tools)
             msgs = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-            response = bound.invoke(msgs)
+            if all_tools:
+                bound = self.llm.bind_tools(all_tools)
+                response = bound.invoke(msgs)
+            else:
+                response = self.llm.invoke(msgs)
             return {"messages": [response]}
 
         def route_agent(state: _GraphState) -> str:
