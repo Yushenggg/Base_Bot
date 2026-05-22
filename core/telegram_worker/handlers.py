@@ -250,7 +250,7 @@ class BotHandlers:
             shutil.copytree(BACKUP_DIR, WORKING_DIR, dirs_exist_ok=True)
 
     def _run_smoke_test(self):
-        for subdir in ("handlers", "tools"):
+        for subdir in ("handlers", "tools", "subagents"):
             d = WORKING_DIR / subdir
             if not d.exists():
                 continue
@@ -261,9 +261,11 @@ class BotHandlers:
                 try:
                     importlib.import_module(module_name)
                 except SyntaxError as e:
-                    return str(e)
-                except Exception:
-                    pass
+                    return f"{f.name}: SyntaxError — {e}"
+                except ImportError as e:
+                    return f"{f.name}: ImportError — {e}"
+                except Exception as e:
+                    return f"{f.name}: {type(e).__name__} — {e}"
         return None
 
     # ── Utilities ───────────────────────────────────────────────────
