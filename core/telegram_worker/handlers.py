@@ -191,24 +191,42 @@ class BotHandlers:
             await self._reply(chat_id, context, "⚙️ Executing code mutation...")
 
             self._backup_working()
+            instruction = state["instruction"]
 
-            code_result = await self._with_typing(
-                chat_id, context,
-                self.agent.ainvoke_code(state["instruction"], history),
-            )
-            if code_result is None:
-                self._restore_working()
-                await self._reply(chat_id, context, "❌ Code execution failed. Rolled back.")
-                return
-
-            error = self._run_smoke_test()
-            if error:
-                self._restore_working()
-                await self._reply(
+            for attempt in range(1, 4):
+                code_result = await self._with_typing(
                     chat_id, context,
-                    f"❌ Smoke test failed. Rolled back.\n```\n{error}\n```",
+                    self.agent.ainvoke_code(instruction, history),
                 )
-                return
+                if not code_result or not code_result.strip():
+                    self._restore_working()
+                    await self._reply(
+                        chat_id, context,
+                        "❌ Code Agent returned empty — no changes made. Rolled back.",
+                    )
+                    return
+
+                error = self._run_smoke_test()
+                if not error:
+                    break
+
+                self._restore_working()
+                if attempt < 3:
+                    await self._reply(
+                        chat_id, context,
+                        f"⚠️ Attempt {attempt} failed. Retrying ({attempt}/3)...\n```\n{error}\n```",
+                    )
+                    instruction = (
+                        f"Previous attempt failed with this error:\n{error}\n\n"
+                        f"Fix the error and try again.\n\n"
+                        f"Original request: {state['instruction']}"
+                    )
+                else:
+                    await self._reply(
+                        chat_id, context,
+                        f"❌ All 3 attempts failed. Rolled back.\n```\n{error}\n```",
+                    )
+                    return
 
             history.append({
                 "role": "assistant",
@@ -276,7 +294,29 @@ class BotHandlers:
         context: ContextTypes.DEFAULT_TYPE,
         text: str,
     ):
-        await context.bot.send_message(chat_id=chat_id, text=text)
+        if not text or not text.strip():
+            text = "I didn't get a response. Please try again."
+
+        MAX_LEN = 4000
+        chunks = []
+        while len(text) > MAX_LEN:
+            split_at = text.rfind("\n", 0, MAX_LEN)
+            if split_at == -1:
+                split_at = text.rfind(" ", 0, MAX_LEN)
+            if split_at == -1:
+                split_at = MAX_LEN
+            chunks.append(text[:split_at])
+            text = text[split_at:].lstrip()
+        if text:
+            chunks.append(text)
+
+        for i, chunk in enumerate(chunks):
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=chunk, parse_mode="Markdown",
+                )
+            except Exception:
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
 
     async def _with_typing(
         self,

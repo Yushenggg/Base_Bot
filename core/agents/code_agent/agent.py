@@ -1,31 +1,42 @@
 import logging
-from pathlib import Path
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 
 from core.agents.logging_handler import ToolLoggingHandler
-from core.agents.tools import read_workspace_file_tool
+from core.agents.tools import read_workspace_file_tool, resolve_workspace_path
 from core.config import WORKING_DIR
 
 logger = logging.getLogger("CODE_AGENT")
 _tool_logger = ToolLoggingHandler()
 
 SYSTEM_PROMPT = (
+    "SYSTEM IDENTITY: You are the code-generation component of a self-evolving Telegram bot. "
+    "The bot can extend itself at runtime by creating new tools, handlers, and subagents. "
+    "The core infrastructure in /core/ is immutable — you only write files to /working/.\n\n"
+
     "You are an Autonomous Systems Engineer. "
     "You write Python code for a Telegram bot. "
     "You can create two kinds of artifacts:\n"
     "1. Tools in working/tools/ — @tool decorated functions\n"
     "2. Handlers in working/handlers/ — files exporting register(app, deps)\n\n"
+
     "KNOWN CONTEXT:\n"
     "- Language: Python 3.12+\n"
     "- Library: python-telegram-bot v20+ (async)\n"
-    "- Handler interface: def register(application, deps) -> None\n"
+    "- The Application is ALREADY built and running in core/. Never create a new Application or call ApplicationBuilder.\n"
+    "- Your handler's register(application, deps) receives the existing running Application. "
+    "Only call application.add_handler(...) inside register().\n"
+    "- Handler interface:\n"
+    "  def register(application, deps) -> None:\n"
+    "      application.add_handler(CommandHandler('mycommand', callback))\n"
     "- Tool interface: @tool decorated functions (from langchain_core.tools import tool)\n"
-    "- Subagent interface: def create_tool(llm) -> BaseTool\n"
-    "  └─ create_tool receives a ChatOpenAI instance, creates its own agent, "
-    "and returns a @tool that wraps it\n\n"
-    "Always validate your code before finishing."
+    "- Always read existing files in /working/ first to understand current structure "
+    "before creating new ones.\n\n"
+
+    "CRITICAL: Do NOT write boilerplate for setting up a Telegram bot (ApplicationBuilder, "
+    "run_polling, main() blocks, etc.). The infrastructure already exists. "
+    "Only write the handler/tool logic and the register() function."
 )
 
 
@@ -64,7 +75,7 @@ class CodeAgent:
 @tool
 def write_workspace_file_tool(file_path: str, content: str) -> str:
     """Write content to a file in the workspace. Path must be within /working/."""
-    abs_path = Path(file_path).resolve()
+    abs_path = resolve_workspace_path(file_path)
     logger.info("write_tool path=%s resolved=%s (%d bytes)", file_path, abs_path, len(content))
     if not str(abs_path).startswith(str(WORKING_DIR)):
         logger.warning("write_tool DENIED — outside working dir: %s", abs_path)
