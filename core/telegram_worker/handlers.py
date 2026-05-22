@@ -214,7 +214,10 @@ class BotHandlers:
                 "role": "assistant",
                 "content": f"Code mutation result: {code_result}",
             })
-            await self._reply(chat_id, context, "✅ Mutation successful. Restarting...")
+            await self._reply(
+                chat_id, context,
+                f"✅ Mutation successful. Restarting...\n\n{code_result}",
+            )
             logger.info("Mutation successful. Restarting via os.execv.")
             os.execv(sys.executable, [sys.executable, "-m", "core.main_telegram_bot"])
         else:

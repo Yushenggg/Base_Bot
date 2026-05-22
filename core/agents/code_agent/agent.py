@@ -21,7 +21,10 @@ SYSTEM_PROMPT = (
     "- Language: Python 3.12+\n"
     "- Library: python-telegram-bot v20+ (async)\n"
     "- Handler interface: def register(application, deps) -> None\n"
-    "- Tool interface: @tool decorated functions (from langchain_core.tools import tool)\n\n"
+    "- Tool interface: @tool decorated functions (from langchain_core.tools import tool)\n"
+    "- Subagent interface: def create_tool(llm) -> BaseTool\n"
+    "  └─ create_tool receives a ChatOpenAI instance, creates its own agent, "
+    "and returns a @tool that wraps it\n\n"
     "Always validate your code before finishing."
 )
 

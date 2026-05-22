@@ -22,6 +22,10 @@ SYSTEM_PROMPT = (
     "  └─ Each file must export: def register(application, deps) -> None\n"
     "- Tools live in: working/tools/<name>.py\n"
     "  └─ Each file contains @tool decorated functions\n"
+    "- Subagents live in: working/subagents/<name>.py\n"
+    "  └─ Each file must export: def create_tool(llm) -> BaseTool\n"
+    "  └─ create_tool receives a ChatOpenAI instance, creates its own agent, "
+    "and returns a @tool that wraps it\n"
     "- You have read_workspace_file_tool — use it to inspect existing code "
     "in /working/ before planning so you understand the current structure."
 )
