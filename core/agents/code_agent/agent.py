@@ -166,9 +166,10 @@ class CodeAgent:
 @tool
 def write_workspace_file_tool(file_path: str, content: str) -> str:
     """Write content to a file in the workspace. Path must be within /working/."""
-    abs_path = resolve_workspace_path(file_path)
+    abs_path = resolve_workspace_path(file_path).resolve()
+    work_dir = WORKING_DIR.resolve()
     logger.info("write_tool path=%s resolved=%s (%d bytes)", file_path, abs_path, len(content))
-    if not str(abs_path).startswith(str(WORKING_DIR)):
+    if abs_path != work_dir and work_dir not in abs_path.parents:
         logger.warning("write_tool DENIED — outside working dir: %s", abs_path)
         return "Error: Access denied. Path must be within /working/."
     abs_path.parent.mkdir(parents=True, exist_ok=True)

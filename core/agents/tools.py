@@ -16,14 +16,38 @@ def resolve_workspace_path(file_path: str) -> Path:
     if len(parts) >= 2 and parts[0] == "/" and parts[1] == "working":
         return (PROJECT_ROOT / Path(*parts[1:])).resolve()
     if p.is_absolute():
-        return p
+        return p.resolve()
     return (PROJECT_ROOT / p).resolve()
+
+
+_SECRET_PATH_PARTS = (
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".netrc",
+    "id_rsa",
+    "id_ed25519",
+    "id_dsa",
+    "id_ecdsa",
+    "credentials",
+)
+
+
+def _is_secret_path(path: Path) -> bool:
+    name = path.name.lower()
+    if name == ".env" or name.startswith(".env."):
+        return True
+    lowered = str(path).lower()
+    return any(marker in lowered for marker in _SECRET_PATH_PARTS)
 
 
 @tool
 def read_workspace_file_tool(file_path: str) -> str:
-    """Read a file or list a directory on the filesystem."""
+    """Read a file or list a directory on the filesystem. Denies access to secret files."""
     abs_path = resolve_workspace_path(file_path)
+    if _is_secret_path(abs_path):
+        logger.warning("read_tool DENIED secret path: %s", abs_path)
+        return "Error: Access denied to this path."
     logger.info("read_tool path=%s resolved=%s", file_path, abs_path)
     if not abs_path.exists():
         logger.warning("read_tool NOT FOUND: %s", abs_path)
