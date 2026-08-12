@@ -1,4 +1,3 @@
-import asyncio
 import importlib
 import logging
 import os
@@ -46,6 +45,7 @@ class TeleBaseBot:
         )
         self._loaded_handler_modules: set[str] = set()
         self._loaded_handler_commands: dict[str, list[BotCommand]] = {}
+        self._registered_handlers: dict[str, list[tuple]] = {}
         self._setup()
 
     def _setup(self):
@@ -64,10 +64,32 @@ class TeleBaseBot:
                 self.handlers.handle_message,
             ),
         )
+        self.application.add_error_handler(self._handle_error)
         self._load_handler_files()
+
+    async def _handle_error(self, update, context):
+        logger.error(
+            "Update %s caused an error",
+            update,
+            exc_info=context.error,
+        )
+
+    def _snapshot_handlers(self) -> dict:
+        return {
+            group: list(handlers)
+            for group, handlers in self.application.handlers.items()
+        }
 
     def _load_handler_files(self):
         importlib.invalidate_caches()
+        for handlers in self._registered_handlers.values():
+            for handler, group in handlers:
+                try:
+                    self.application.remove_handler(handler, group)
+                except Exception:
+                    pass
+        self._registered_handlers = {}
+
         handlers_dir = WORKING_DIR / "handlers"
         if not handlers_dir.exists():
             return
@@ -81,16 +103,25 @@ class TeleBaseBot:
                 else:
                     module = importlib.import_module(module_name)
                 if hasattr(module, "register"):
+                    before = self._snapshot_handlers()
                     module.register(self.application, {
                         "agent": self.agent,
                         "config": app_config,
                         "working_dir": WORKING_DIR,
                     })
+                    after = self._snapshot_handlers()
+                    added = []
+                    for group, handlers in after.items():
+                        prev = before.get(group, [])
+                        for h in handlers:
+                            if h not in prev:
+                                added.append((h, group))
+                    self._registered_handlers[module_name] = added
                     self._loaded_handler_modules.add(module_name)
                     handler_commands = getattr(module, "commands", [])
                     if handler_commands:
                         self._loaded_handler_commands[module_name] = handler_commands
-                    logger.info("Loaded handler module: %s", module_name)
+                    logger.info("Loaded handler module: %s (%d handlers)", module_name, len(added))
                 else:
                     logger.warning(
                         "Handler module %s has no register() function, skipping",
@@ -99,13 +130,13 @@ class TeleBaseBot:
             except Exception as e:
                 logger.exception("Failed to load handler %s: %s", module_name, e)
 
-    def reload(self):
+    async def reload(self):
         logger.info("Reloading bot components in-process")
         self._load_handler_files()
         self.agent.reload_standard_tools()
         logger.info("Reload complete — %d handler modules, %d tools",
                      len(self._loaded_handler_modules), len(self.agent.standard.tools))
-        asyncio.create_task(self._register_all_commands())
+        await self._register_all_commands()
 
     async def _register_all_commands(self):
         all_commands = list(STATIC_COMMANDS)
@@ -128,4 +159,4 @@ class TeleBaseBot:
             await context.bot.send_message(chat_id=chat_id, text="🔄 Restarting bot...")
         logger.info("Manual restart via /restart_bot by user %s",
                      update.effective_user.id if update.effective_user else "unknown")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        os._exit(0)

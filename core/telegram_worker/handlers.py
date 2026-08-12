@@ -223,7 +223,7 @@ class BotHandlers:
             )
             logger.info("Mutation successful. Reloading bot components in-process.")
             if self._reload_callback:
-                self._reload_callback()
+                await self._reload_callback()
             await self._reply(chat_id, context, "🔄 Reload complete. New handlers and tools are now active.")
         else:
             reply = await self._with_typing(
