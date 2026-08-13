@@ -93,7 +93,9 @@ TeleBaseBot/
 │   │   ├── logging_handler.py  # Agent callback logger
 │   │   ├── standard_agent/     # Standard chat agent (uses working/tools)
 │   │   ├── plan_agent/         # Requirements planner agent
-│   │   └── code_agent/         # Code generation agent (writes to working/)
+│   │   ├── code_agent/         # Code generation agent (writes to working/)
+│   │   │   ├── prompts.py      # System prompt + environment block
+│   │   │   └── tools.py        # Coding tool harness (read/edit/write/glob/grep/bash)
 │   └── telegram_worker/
 │       ├── bot.py              # TeleBaseBot class, command registration, hot-reload
 │       ├── handlers.py         # Message and command handlers
@@ -117,7 +119,7 @@ TeleBaseBot/
 ### Code Editing (`/edit`)
 1. User sends `/edit <description>` with a feature request.
 2. The PlanAgent refines the requirements through a brief conversation.
-3. Once confirmed (user replies "go"), the CodeAgent generates code into `working/`.
+3. Once confirmed (user replies "go"), the PlanAgent finalizes a canonical spec, and the CodeAgent writes the code into `working/` using its file-edit/search tools.
 4. The code is verified; if invalid, the previous state is restored from `backup/`.
 5. The bot performs an in-process hot-reload — new handlers and tools are activated without restarting.
 

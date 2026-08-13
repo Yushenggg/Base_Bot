@@ -15,6 +15,15 @@ from core.telegram_worker.auth import RoleResolver
 
 logger = logging.getLogger("HANDLERS")
 
+_FINALIZE_SPEC_PROMPT = (
+    "The user has confirmed the plan. Produce the final implementation spec for "
+    "the code agent as plain text, with these sections:\n"
+    "Feature, Trigger, Input, Output, Edge cases.\n"
+    "Include concrete examples and exact wording the code agent will need.\n"
+    "Do NOT ask questions, do NOT end with a confirmation prompt, and do NOT "
+    "mention implementation details (files, imports, libraries)."
+)
+
 UpdateKind = Literal[
     "text", "photo", "sticker", "document", "audio",
     "video", "voice", "location", "contact", "poll",
@@ -189,12 +198,24 @@ class BotHandlers:
             await self.sessions.clear_edit_state(chat_id)
             await self._reply(chat_id, context, "⚙️ Executing code mutation...")
 
+            spec_history = list(history)
+            spec_history.append({"role": "user", "content": _FINALIZE_SPEC_PROMPT})
+            spec = await self._with_typing(
+                chat_id, context,
+                self.agent.ainvoke_planner(spec_history),
+            )
+            if not spec or not spec.strip():
+                await self._reply(
+                    chat_id, context,
+                    "❌ Could not finalize the spec. No changes made.",
+                )
+                return
+
             self._backup_working()
-            instruction = state.instruction
 
             code_result = await self._with_typing(
                 chat_id, context,
-                self.agent.ainvoke_code(instruction, history),
+                self.agent.ainvoke_code(spec, list(state.planner_history)),
             )
             if not code_result or not code_result.strip():
                 self._restore_working()
