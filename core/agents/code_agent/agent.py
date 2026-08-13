@@ -118,7 +118,9 @@ class CodeAgent:
 
     async def ainvoke(self, instruction: str, messages: list[dict]) -> str:
         reset_read_tracking()
-        full = messages + [{"role": "user", "content": instruction}]
+        full = messages + [
+            {"role": "user", "content": f"Implement this spec:\n\n{instruction}"}
+        ]
         logger.info(
             "Invoking with instruction: %.200s | history: %d msgs",
             instruction,
