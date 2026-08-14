@@ -31,9 +31,13 @@ class CoreAgent:
         logger.debug("→ planner (%d messages)", len(messages))
         return await self.planner.ainvoke(messages)
 
-    async def ainvoke_code(self, instruction: str, messages: list[dict]) -> str:
+    async def ainvoke_code(self, instruction: str, messages: list[dict]):
         logger.debug("→ code (%d messages, instruction=%.80s)", len(messages), instruction)
         return await self.code.ainvoke(instruction, messages)
+
+    async def ainvoke_code_continue(self, history: list, instruction: str):
+        logger.debug("→ code continue (%d history msgs)", len(history))
+        return await self.code.ainvoke_continue(history, instruction)
 
     def reload_standard_tools(self):
         self.standard.reload_tools()

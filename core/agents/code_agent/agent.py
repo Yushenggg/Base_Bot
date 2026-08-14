@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -28,7 +29,15 @@ logger = logging.getLogger("CODE_AGENT")
 _tool_logger = ToolLoggingHandler()
 
 MAX_VERIFY_ATTEMPTS = 3
-MAX_STEPS = 30
+MAX_STEPS = 40
+STEP_WARNING_THRESHOLD = 6
+
+
+@dataclass
+class CodeResult:
+    reply: str
+    capped: bool
+    history: list
 
 
 class _CodeState(TypedDict):
@@ -36,19 +45,43 @@ class _CodeState(TypedDict):
     verify_attempts: int
     verify_error: str | None
     steps: int
+    capped: bool
 
 
 def _build_graph(llm, system_prompt, tools, work_dir):
     tool_node = ToolNode(tools)
 
     def agent_node(state: _CodeState) -> dict:
+        steps = state.get("steps", 0) + 1
         msgs = [SystemMessage(content=system_prompt)] + state["messages"]
+        remaining = MAX_STEPS - steps
+        if remaining <= STEP_WARNING_THRESHOLD:
+            msgs.append(HumanMessage(
+                content=(
+                    f"Step budget: {remaining} agent turns left. Stop testing and "
+                    "exploration. Finish any remaining code now, then reply with "
+                    "a brief summary of what you built."
+                )
+            ))
         if tools:
             bound = llm.bind_tools(tools)
             response = bound.invoke(msgs)
         else:
             response = llm.invoke(msgs)
-        return {"messages": [response], "steps": state.get("steps", 0) + 1}
+        return {"messages": [response], "steps": steps}
+
+    def finalize_node(state: _CodeState) -> dict:
+        msgs = [SystemMessage(content=system_prompt)] + state["messages"]
+        msgs.append(HumanMessage(
+            content=(
+                "You have reached the step limit. Do not call any tools. Produce "
+                "your final message with exactly these two sections:\n"
+                "Things done:\n- <what you implemented, which files you wrote>\n"
+                "Things left:\n- <what still needs to be done to complete the spec>"
+            )
+        ))
+        response = llm.invoke(msgs)
+        return {"messages": [response], "capped": True}
 
     async def verify_node(state: _CodeState) -> dict:
         sync = await sync_dependencies()
@@ -85,7 +118,7 @@ def _build_graph(llm, system_prompt, tools, work_dir):
         last = state["messages"][-1]
         if hasattr(last, "tool_calls") and last.tool_calls:
             if state.get("steps", 0) >= MAX_STEPS:
-                return "end"
+                return "finalize"
             return "tools"
         return "verify"
 
@@ -101,9 +134,14 @@ def _build_graph(llm, system_prompt, tools, work_dir):
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tool_node)
     graph.add_node("verify", verify_node)
+    graph.add_node("finalize", finalize_node)
     graph.set_entry_point("agent")
-    graph.add_conditional_edges("agent", route_agent, {"tools": "tools", "verify": "verify", "end": END})
+    graph.add_conditional_edges(
+        "agent", route_agent,
+        {"tools": "tools", "verify": "verify", "finalize": "finalize"},
+    )
     graph.add_edge("tools", "agent")
+    graph.add_edge("finalize", END)
     graph.add_conditional_edges("verify", route_verify, {"agent": "agent", "end": END})
     return graph.compile()
 
@@ -125,7 +163,16 @@ class CodeAgent:
         system_prompt = build_system_prompt(model_name)
         self.agent = _build_graph(llm, system_prompt, self.tools, work_dir)
 
-    async def ainvoke(self, instruction: str, messages: list[dict]) -> str:
+    def _make_state(self, messages: list) -> dict:
+        return {
+            "messages": messages,
+            "verify_attempts": 0,
+            "verify_error": None,
+            "steps": 0,
+            "capped": False,
+        }
+
+    async def ainvoke(self, instruction: str, messages: list[dict]) -> CodeResult:
         reset_read_tracking()
         full = messages + [
             {"role": "user", "content": f"Implement this spec:\n\n{instruction}"}
@@ -136,21 +183,43 @@ class CodeAgent:
             len(messages),
         )
         result = await self.agent.ainvoke(
-            {
-                "messages": full,
-                "verify_attempts": 0,
-                "verify_error": None,
-                "steps": 0,
-            },
+            self._make_state(full),
             config={"callbacks": [_tool_logger]},
         )
-        verify_err = result.get("verify_error")
-        reply = extract_agent_reply(result)
+        code_result = self._to_code_result(result)
         logger.info(
-            "Response: %.200s | verify_attempts=%d | steps=%d | verify_error=%s",
-            reply,
+            "Response: %.200s | verify_attempts=%d | steps=%d | verify_error=%s | capped=%s",
+            code_result.reply,
             result.get("verify_attempts", 0),
             result.get("steps", 0),
-            verify_err,
+            result.get("verify_error"),
+            code_result.capped,
         )
-        return reply
+        return code_result
+
+    async def ainvoke_continue(self, history: list, instruction: str) -> CodeResult:
+        reset_read_tracking()
+        full = list(history) + [HumanMessage(content=instruction)]
+        logger.info("Continuing with %d history msgs", len(history))
+        result = await self.agent.ainvoke(
+            self._make_state(full),
+            config={"callbacks": [_tool_logger]},
+        )
+        code_result = self._to_code_result(result)
+        logger.info(
+            "Continue response: %.200s | verify_attempts=%d | steps=%d | verify_error=%s | capped=%s",
+            code_result.reply,
+            result.get("verify_attempts", 0),
+            result.get("steps", 0),
+            result.get("verify_error"),
+            code_result.capped,
+        )
+        return code_result
+
+    @staticmethod
+    def _to_code_result(result: dict) -> CodeResult:
+        return CodeResult(
+            reply=extract_agent_reply(result),
+            capped=bool(result.get("capped")),
+            history=list(result.get("messages", [])),
+        )

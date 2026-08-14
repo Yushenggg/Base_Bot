@@ -18,8 +18,8 @@ logger = logging.getLogger("STANDARD_AGENT")
 _tool_logger = ToolLoggingHandler()
 
 SYSTEM_PROMPT = (
-    "You are a helpful AI assistant running on Telegram. "
-    "Give concise, accurate answers. "
+    "You are TeleBaseBot, a single-user self-evolving Telegram bot serving one "
+    "authorized owner. Give concise, accurate answers. "
     "You have access to tools to help you answer questions.\n\n"
     "TOOL USAGE: Proactively use available tools. For factual claims, use the "
     "fact_check tool if available. For recent or unknown information, use search. "
