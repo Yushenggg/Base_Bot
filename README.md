@@ -48,6 +48,29 @@ uv sync
 
 If you prefer to run it without creating a separate virtual environment manually, `uv` will manage the environment for you.
 
+## Dependency Management
+
+The bot manages its own Python dependencies. On startup (and after every `/edit`)
+it reconciles `working/deps.txt` against `pyproject.toml` and runs `uv sync`
+whenever they differ.
+
+- `working/deps.txt` — manifest of working-managed packages (one PEP 508
+  specifier per line). The CodeAgent writes this file; removing a line
+  uninstalls the package on the next sync.
+- `base/pyproject.toml` + `base/uv.lock` — committed pristine copies of the
+  base project files. The live `pyproject.toml`/`uv.lock` are mutated at
+  runtime and should not be committed while dirty.
+
+Scripts:
+
+```bash
+./scripts/restore_base.sh   # reset pyproject.toml + uv.lock to their base form, then uv sync
+./scripts/update_base.sh    # snapshot the current project files into base/
+```
+
+To add a **base** dependency: edit `pyproject.toml`, run `uv sync`, then
+`./scripts/update_base.sh`.
+
 ## Configuration
 
 Create a `.env` file in the project root. Use `.env.example` as the template.
@@ -105,6 +128,8 @@ TeleBaseBot/
 │   ├── tools/                  # Pluggable agent tools
 │   └── subagents/              # Pluggable subagent tools
 ├── backup/                     # Auto-backup of working/ during code mutations
+├── base/                       # Pristine base project files (pyproject.toml + uv.lock)
+├── scripts/                    # restore_base.sh / update_base.sh
 ```
 
 ## How It Works

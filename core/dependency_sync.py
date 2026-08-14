@@ -2,12 +2,11 @@ import asyncio
 import ast
 import logging
 import re
-import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.config import DATA_DIR, WORKING_DIR
+from core.config import WORKING_DIR
 
 logger = logging.getLogger("DEPENDENCY_SYNC")
 
@@ -15,7 +14,7 @@ PROJECT_ROOT = WORKING_DIR.parent
 PYPROJECT_PATH = PROJECT_ROOT / "pyproject.toml"
 LOCK_PATH = PROJECT_ROOT / "uv.lock"
 MANIFEST_PATH = WORKING_DIR / "deps.txt"
-BASE_DEPS_PATH = DATA_DIR / "base_deps.txt"
+BASE_PYPROJECT_PATH = PROJECT_ROOT / "base" / "pyproject.toml"
 
 UV_TIMEOUT_SECONDS = 300
 
@@ -51,50 +50,16 @@ def _validate(dep: str) -> str | None:
     return None
 
 
-def _git_base_deps() -> list[str] | None:
-    try:
-        out = subprocess.run(
-            ["git", "show", "HEAD:pyproject.toml"],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if not out:
-        return None
-    return _extract_dependencies(out)
-
-
-def _load_base_snapshot() -> list[str] | None:
-    if not BASE_DEPS_PATH.exists():
-        return None
-    deps: list[str] = []
-    for raw in BASE_DEPS_PATH.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line and not line.startswith("#"):
-            deps.append(line)
-    return deps
-
-
-def _save_base_snapshot(deps: list[str]) -> None:
-    BASE_DEPS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    content = "\n".join(deps) + ("\n" if deps else "")
-    BASE_DEPS_PATH.write_text(content, encoding="utf-8")
-
-
 def _base_deps() -> list[str]:
-    git_deps = _git_base_deps()
-    if git_deps:
-        return git_deps
-    snapshot = _load_base_snapshot()
-    if snapshot is not None:
-        return snapshot
-    snapshot = _extract_dependencies(PYPROJECT_PATH.read_text(encoding="utf-8"))
-    _save_base_snapshot(snapshot)
-    logger.info("No git available — persisted base deps to %s", BASE_DEPS_PATH)
-    return snapshot
+    try:
+        text = BASE_PYPROJECT_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning(
+            "Missing %s — falling back to current pyproject.toml",
+            BASE_PYPROJECT_PATH,
+        )
+        text = PYPROJECT_PATH.read_text(encoding="utf-8")
+    return _extract_dependencies(text)
 
 
 def _normalize(dep: str) -> str:
