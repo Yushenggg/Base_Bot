@@ -312,6 +312,7 @@ class BotHandlers:
         sync = await self._sync_dependencies()
         if not sync.synced and sync.error:
             self._restore_working()
+            await revert_project_files(project_snapshot)
             await self._reply(
                 chat_id, context,
                 f"❌ Dependency sync failed. Rolled back.\n```\n{sync.error}\n```",
