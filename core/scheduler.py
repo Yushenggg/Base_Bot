@@ -39,7 +39,9 @@ def _queue():
 
 
 def _file_for(name: str) -> Path:
-    safe = "".join(c for c in name if c.isalnum() or c in "-_.")
+    safe = "".join(
+        c if (c.isalnum() or c in "-_.") else "_" for c in name
+    ).strip("-_.")
     SCHEDULES_DIR.mkdir(parents=True, exist_ok=True)
     return SCHEDULES_DIR / f"{safe or 'job'}.yml"
 
@@ -115,6 +117,10 @@ def _cancel_named(queue, name: str) -> None:
 
 
 def _cancel_all(queue) -> None:
+    # KIV: cancels EVERY job in the queue, including any non-scheduler jobs
+    # registered directly on application.job_queue by working code (they are
+    # not re-registered from data/schedules/). If direct job_queue use is ever
+    # introduced, track scheduler-owned names and cancel only those.
     for job in queue.jobs():
         job.schedule_removal()
 
