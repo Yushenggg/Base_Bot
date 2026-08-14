@@ -8,7 +8,7 @@ from pydantic import BaseModel, PrivateAttr
 
 Message = dict[str, str]
 
-EditStatePhase = Literal["planning", "executing", "done", "cancelled"]
+EditStatePhase = Literal["planning", "executing_paused", "done", "cancelled"]
 
 
 class EditState(BaseModel):
@@ -16,6 +16,9 @@ class EditState(BaseModel):
     instruction: str
     planner_history: list[Message]
     started_at: float
+    agent_history: list | None = None
+    project_snapshot: dict | None = None
+    spec: str | None = None
 
 
 class SessionManager(BaseModel):
@@ -101,6 +104,9 @@ class SessionManager(BaseModel):
         phase: EditStatePhase,
         instruction: str,
         planner_history: list[Message],
+        agent_history: list | None = None,
+        project_snapshot: dict | None = None,
+        spec: str | None = None,
     ) -> EditState:
         self._ensure_cleanup_started()
         async with self._lock:
@@ -109,8 +115,12 @@ class SessionManager(BaseModel):
                 instruction=instruction,
                 planner_history=planner_history,
                 started_at=time.time(),
+                agent_history=agent_history,
+                project_snapshot=project_snapshot,
+                spec=spec,
             )
             self._edit_states[chat_id] = state
+            self._activity[chat_id] = time.time()
             return state
 
     async def clear_edit_state(self, chat_id: int) -> None:
@@ -136,11 +146,14 @@ class SessionManager(BaseModel):
     async def _evict_idle(self) -> None:
         now = time.time()
         async with self._lock:
-            stale = [
-                chat_id
-                for chat_id, last_active in self._activity.items()
-                if now - last_active > self.idle_timeout
-            ]
+            stale = []
+            for chat_id, last_active in self._activity.items():
+                if now - last_active <= self.idle_timeout:
+                    continue
+                state = self._edit_states.get(chat_id)
+                if state and now - state.started_at <= self.edit_timeout:
+                    continue
+                stale.append(chat_id)
             for chat_id in stale:
                 self._memory.pop(chat_id, None)
                 self._activity.pop(chat_id, None)

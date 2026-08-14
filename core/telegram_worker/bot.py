@@ -12,6 +12,7 @@ from telegram.ext import (
     filters,
 )
 
+from core import scheduler
 from core.config import app_config, WORKING_DIR
 from core.core_agent import CoreAgent
 from core.telegram_worker.auth import RoleResolver
@@ -47,6 +48,8 @@ class TeleBaseBot:
         self._loaded_handler_commands: dict[str, list[BotCommand]] = {}
         self._registered_handlers: dict[str, list[tuple]] = {}
         self._setup()
+        scheduler.set_job_queue(self.application.job_queue)
+        scheduler.load_from_disk()
 
     def _setup(self):
         self.application.add_handler(
@@ -108,6 +111,7 @@ class TeleBaseBot:
                         "agent": self.agent,
                         "config": app_config,
                         "working_dir": WORKING_DIR,
+                        "scheduler": scheduler,
                     })
                     after = self._snapshot_handlers()
                     added = []
@@ -134,6 +138,7 @@ class TeleBaseBot:
         logger.info("Reloading bot components in-process")
         self._load_handler_files()
         self.agent.reload_standard_tools()
+        scheduler.reload_from_disk()
         logger.info("Reload complete — %d handler modules, %d tools",
                      len(self._loaded_handler_modules), len(self.agent.standard.tools))
         await self._register_all_commands()

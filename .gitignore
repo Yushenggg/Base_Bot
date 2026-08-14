@@ -17,3 +17,6 @@ working/tmp/
 
 # Backups
 backup/*
+
+# Scheduler state
+data/

@@ -2,7 +2,7 @@ import asyncio
 import ast
 import logging
 import re
-import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +14,7 @@ PROJECT_ROOT = WORKING_DIR.parent
 PYPROJECT_PATH = PROJECT_ROOT / "pyproject.toml"
 LOCK_PATH = PROJECT_ROOT / "uv.lock"
 MANIFEST_PATH = WORKING_DIR / "deps.txt"
+BASE_PYPROJECT_PATH = PROJECT_ROOT / "base" / "pyproject.toml"
 
 UV_TIMEOUT_SECONDS = 300
 
@@ -51,18 +52,14 @@ def _validate(dep: str) -> str | None:
 
 def _base_deps() -> list[str]:
     try:
-        out = subprocess.run(
-            ["git", "show", "HEAD:pyproject.toml"],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=15,
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if not out:
-        return []
-    return _extract_dependencies(out)
+        text = BASE_PYPROJECT_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.warning(
+            "Missing %s — falling back to current pyproject.toml",
+            BASE_PYPROJECT_PATH,
+        )
+        text = PYPROJECT_PATH.read_text(encoding="utf-8")
+    return _extract_dependencies(text)
 
 
 def _normalize(dep: str) -> str:
@@ -104,24 +101,39 @@ def _resolve_target_deps(manifest: list[str]) -> list[str]:
 
 
 def _extract_dependencies(pyproject_text: str) -> list[str]:
-    m = re.search(r"dependencies\s*=\s*\[(.*?)\]", pyproject_text, re.DOTALL)
-    if not m:
+    try:
+        data = tomllib.loads(pyproject_text)
+    except tomllib.TOMLDecodeError:
         return []
-    body = m.group(1)
-    deps: list[str] = []
-    for part in body.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if part.startswith('"'):
-            qm = re.match(r'"((?:[^"\\]|\\.)*)"', part)
-            if qm:
-                deps.append(qm.group(1).encode().decode("unicode_escape"))
-        elif part.startswith("'"):
-            qm = re.match(r"'((?:[^'\\]|\\.)*)'", part)
-            if qm:
-                deps.append(qm.group(1))
-    return deps
+    project = data.get("project", {})
+    return [str(d) for d in project.get("dependencies", [])]
+
+
+def _find_dependencies_end(text: str, start: int) -> int:
+    depth = 0
+    in_str = False
+    escaped = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return -1
 
 
 def _apply_to_pyproject(target_deps: list[str]) -> None:
@@ -130,13 +142,16 @@ def _apply_to_pyproject(target_deps: list[str]) -> None:
     if target_deps == existing:
         return
 
+    m = re.search(r"dependencies\s*=\s*\[", text)
+    if not m:
+        raise RuntimeError("Could not locate dependencies block in pyproject.toml")
+    end = _find_dependencies_end(text, m.end() - 1)
+    if end == -1:
+        raise RuntimeError("Could not locate end of dependencies block in pyproject.toml")
+
     lines = [f'    "{d}",' for d in target_deps]
     block = "dependencies = [\n" + "\n".join(lines) + "\n]"
-    new_text = re.sub(
-        r"dependencies\s*=\s*\[.*?\]", block, text, count=1, flags=re.DOTALL,
-    )
-    if new_text == text:
-        raise RuntimeError("Could not locate dependencies block in pyproject.toml")
+    new_text = text[: m.start()] + block + text[end + 1 :]
     PYPROJECT_PATH.write_text(new_text, encoding="utf-8")
 
 

@@ -98,8 +98,11 @@ class BotHandlers:
         kind = _get_update_kind(update)
 
         edit_state = await self.sessions.get_edit_state(chat_id)
-        if edit_state and edit_state.phase == "planning":
-            await self._handle_planning_response(chat_id, update, context)
+        if edit_state:
+            if edit_state.phase == "planning":
+                await self._handle_planning_response(chat_id, update, context)
+            elif edit_state.phase == "executing_paused":
+                await self._handle_paused_response(chat_id, update, context)
             return
 
         match kind:
@@ -219,60 +222,56 @@ class BotHandlers:
             self._backup_working()
             project_snapshot = snapshot_project_files()
 
-            code_result = await self._with_typing(
+            result = await self._with_typing(
                 chat_id, context,
                 self.agent.ainvoke_code(spec, list(state.planner_history)),
             )
-            if not code_result or not code_result.strip():
-                self._restore_working()
-                await self._reply(
-                    chat_id, context,
-                    "❌ Code Agent returned empty — no changes made. Rolled back.",
-                )
-                return
-
-            sync = await self._sync_dependencies()
-            if not sync.synced and sync.error:
-                self._restore_working()
-                await self._reply(
-                    chat_id, context,
-                    f"❌ Dependency sync failed. Rolled back.\n```\n{sync.error}\n```",
-                )
-                return
-
-            error = verify_working_code(WORKING_DIR)
-            if error:
+            if result is None:
                 self._restore_working()
                 await revert_project_files(project_snapshot)
                 await self._reply(
                     chat_id, context,
-                    f"❌ Code verification failed. Rolled back.\n```\n{error}\n```",
+                    "❌ Code Agent failed. No changes made. Rolled back.",
                 )
                 return
 
-            history.append({
-                "role": "assistant",
-                "content": f"Code mutation result: {code_result}",
-            })
-            sync_note = ""
-            if sync.synced or sync.kept:
-                parts = []
-                if sync.added:
-                    parts.append(f"Installed: {', '.join(sync.added)}")
-                if sync.removed:
-                    parts.append(f"Removed: {', '.join(sync.removed)}")
-                if sync.kept:
-                    parts.append(f"Kept (still in use): {', '.join(sync.kept)}")
-                if parts:
-                    sync_note = f"\n\n📦 {' | '.join(parts)}"
-            await self._reply(
-                chat_id, context,
-                f"✅ Mutation successful. Reloading in-process...{sync_note}\n\n{code_result}",
+            if result.failed:
+                await self.sessions.set_edit_state(
+                    chat_id,
+                    phase="executing_paused",
+                    instruction=state.instruction,
+                    planner_history=list(state.planner_history),
+                    agent_history=result.history or None,
+                    project_snapshot=project_snapshot,
+                    spec=spec,
+                )
+                await self._reply(
+                    chat_id, context,
+                    "⚠️ " + result.reply
+                    + "\n\nYour progress is saved. Reply 'continue' to try again, or 'cancel' to roll back.",
+                )
+                return
+
+            if result.capped:
+                await self.sessions.set_edit_state(
+                    chat_id,
+                    phase="executing_paused",
+                    instruction=state.instruction,
+                    planner_history=list(state.planner_history),
+                    agent_history=result.history,
+                    project_snapshot=project_snapshot,
+                    spec=spec,
+                )
+                await self._reply(
+                    chat_id, context,
+                    result.reply
+                    + "\n\nShould I continue? Reply 'continue' to finish, or 'cancel' to roll back.",
+                )
+                return
+
+            await self._finish_execution(
+                chat_id, context, result.reply, project_snapshot,
             )
-            logger.info("Mutation successful. Reloading bot components in-process.")
-            if self._reload_callback:
-                await self._reload_callback()
-            await self._reply(chat_id, context, "🔄 Reload complete. New handlers and tools are now active.")
         else:
             reply = await self._with_typing(
                 chat_id, context,
@@ -293,6 +292,148 @@ class BotHandlers:
                 planner_history=history,
             )
             await self._reply(chat_id, context, reply)
+
+    async def _finish_execution(
+        self,
+        chat_id: int,
+        context: ContextTypes.DEFAULT_TYPE,
+        code_reply: str,
+        project_snapshot,
+    ) -> None:
+        if not code_reply or not code_reply.strip():
+            self._restore_working()
+            await revert_project_files(project_snapshot)
+            await self._reply(
+                chat_id, context,
+                "❌ Code Agent returned empty — no changes made. Rolled back.",
+            )
+            return
+
+        sync = await self._sync_dependencies()
+        if not sync.synced and sync.error:
+            self._restore_working()
+            await revert_project_files(project_snapshot)
+            await self._reply(
+                chat_id, context,
+                f"❌ Dependency sync failed. Rolled back.\n```\n{sync.error}\n```",
+            )
+            return
+
+        error = verify_working_code(WORKING_DIR)
+        if error:
+            self._restore_working()
+            await revert_project_files(project_snapshot)
+            await self._reply(
+                chat_id, context,
+                f"❌ Code verification failed. Rolled back.\n```\n{error}\n```",
+            )
+            return
+
+        sync_note = ""
+        if sync.synced or sync.kept:
+            parts = []
+            if sync.added:
+                parts.append(f"Installed: {', '.join(sync.added)}")
+            if sync.removed:
+                parts.append(f"Removed: {', '.join(sync.removed)}")
+            if sync.kept:
+                parts.append(f"Kept (still in use): {', '.join(sync.kept)}")
+            if parts:
+                sync_note = f"\n\n📦 {' | '.join(parts)}"
+        await self._reply(
+            chat_id, context,
+            f"✅ Mutation successful. Reloading in-process...{sync_note}\n\n{code_reply}",
+        )
+        logger.info("Mutation successful. Reloading bot components in-process.")
+        if self._reload_callback:
+            await self._reload_callback()
+        await self._reply(chat_id, context, "🔄 Reload complete. New handlers and tools are now active.")
+
+    async def _handle_paused_response(
+        self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE,
+    ):
+        state = await self.sessions.get_edit_state(chat_id)
+        if state is None:
+            await self._reply(
+                chat_id, context,
+                "⏰ Execution session timed out. Start a new /edit if needed.",
+            )
+            return
+
+        user_text = (update.effective_message.text or "").strip().lower()
+        if user_text in ("continue", "resume", "go on", "keep going", "try again", "retry"):
+            await self._reply(chat_id, context, "⚙️ Continuing...")
+            if state.agent_history:
+                coro = self.agent.ainvoke_code_continue(
+                    state.agent_history,
+                    "Continue implementing the spec. Finish all remaining work, "
+                    "then reply with a brief summary.",
+                )
+            else:
+                coro = self.agent.ainvoke_code(
+                    state.spec or state.instruction,
+                    list(state.planner_history),
+                )
+            result = await self._with_typing(chat_id, context, coro)
+            if result is None:
+                await self._reply(
+                    chat_id, context,
+                    "❌ Code Agent failed while continuing.",
+                )
+                return
+
+            if result.failed:
+                await self.sessions.set_edit_state(
+                    chat_id,
+                    phase="executing_paused",
+                    instruction=state.instruction,
+                    planner_history=state.planner_history,
+                    agent_history=result.history or None,
+                    project_snapshot=state.project_snapshot,
+                    spec=state.spec,
+                )
+                await self._reply(
+                    chat_id, context,
+                    "⚠️ " + result.reply
+                    + "\n\nYour progress is saved. Reply 'continue' to try again, or 'cancel' to roll back.",
+                )
+                return
+
+            if result.capped:
+                await self.sessions.set_edit_state(
+                    chat_id,
+                    phase="executing_paused",
+                    instruction=state.instruction,
+                    planner_history=state.planner_history,
+                    agent_history=result.history,
+                    project_snapshot=state.project_snapshot,
+                    spec=state.spec,
+                )
+                await self._reply(
+                    chat_id, context,
+                    result.reply
+                    + "\n\nShould I continue? Reply 'continue' to finish, or 'cancel' to roll back.",
+                )
+                return
+
+            await self.sessions.clear_edit_state(chat_id)
+            await self._finish_execution(
+                chat_id, context, result.reply, state.project_snapshot,
+            )
+            return
+
+        if user_text in ("cancel", "stop", "no", "abort"):
+            self._restore_working()
+            if state.project_snapshot:
+                await revert_project_files(state.project_snapshot)
+            await self.sessions.clear_edit_state(chat_id)
+            await self._reply(chat_id, context, "🗑️ Rolled back. No changes kept.")
+            return
+
+        await self._reply(
+            chat_id, context,
+            "Reply 'continue' to keep going, or 'cancel' to roll back.",
+        )
 
     # ── Safety helpers (backup / restore) ────────────────────────────
 

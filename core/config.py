@@ -5,6 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 WORKING_DIR = Path(__file__).resolve().parent.parent / "working"
 BACKUP_DIR = Path(__file__).resolve().parent.parent / "backup" / "working"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+SCHEDULES_DIR = DATA_DIR / "schedules"
 
 
 class AppConfig(BaseSettings):
