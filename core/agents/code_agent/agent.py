@@ -22,6 +22,7 @@ from core.agents.code_agent.tools import (
 )
 from core.agents.logging_handler import ToolLoggingHandler
 from core.config import WORKING_DIR
+from core.dependency_sync import sync_dependencies
 
 logger = logging.getLogger("CODE_AGENT")
 _tool_logger = ToolLoggingHandler()
@@ -49,8 +50,16 @@ def _build_graph(llm, system_prompt, tools, work_dir):
             response = llm.invoke(msgs)
         return {"messages": [response], "steps": state.get("steps", 0) + 1}
 
-    def verify_node(state: _CodeState) -> dict:
+    async def verify_node(state: _CodeState) -> dict:
+        sync = await sync_dependencies()
+        sync_error = f"Dependency sync failed: {sync.error}" if sync.error else None
+
         error = verify_working_code(work_dir)
+        if error is None:
+            error = sync_error
+        elif sync_error:
+            error = f"{sync_error}\n{error}"
+
         attempts = state.get("verify_attempts", 0)
 
         if error:
