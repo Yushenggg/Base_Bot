@@ -18,6 +18,7 @@ class EditState(BaseModel):
     started_at: float
     agent_history: list | None = None
     project_snapshot: dict | None = None
+    spec: str | None = None
 
 
 class SessionManager(BaseModel):
@@ -105,6 +106,7 @@ class SessionManager(BaseModel):
         planner_history: list[Message],
         agent_history: list | None = None,
         project_snapshot: dict | None = None,
+        spec: str | None = None,
     ) -> EditState:
         self._ensure_cleanup_started()
         async with self._lock:
@@ -115,6 +117,7 @@ class SessionManager(BaseModel):
                 started_at=time.time(),
                 agent_history=agent_history,
                 project_snapshot=project_snapshot,
+                spec=spec,
             )
             self._edit_states[chat_id] = state
             self._activity[chat_id] = time.time()

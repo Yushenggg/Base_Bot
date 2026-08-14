@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,12 +32,15 @@ _tool_logger = ToolLoggingHandler()
 MAX_VERIFY_ATTEMPTS = 3
 MAX_STEPS = 40
 STEP_WARNING_THRESHOLD = 6
+MAX_RUN_RETRIES = 2
+RETRY_DELAY_SECONDS = 2.0
 
 
 @dataclass
 class CodeResult:
     reply: str
     capped: bool
+    failed: bool
     history: list
 
 
@@ -182,18 +186,13 @@ class CodeAgent:
             instruction,
             len(messages),
         )
-        result = await self.agent.ainvoke(
-            self._make_state(full),
-            config={"callbacks": [_tool_logger]},
-        )
-        code_result = self._to_code_result(result)
+        code_result = await self._run_with_retry(self._make_state(full))
         logger.info(
-            "Response: %.200s | verify_attempts=%d | steps=%d | verify_error=%s | capped=%s",
+            "Response: %.200s | capped=%s | failed=%s | history=%d msgs",
             code_result.reply,
-            result.get("verify_attempts", 0),
-            result.get("steps", 0),
-            result.get("verify_error"),
             code_result.capped,
+            code_result.failed,
+            len(code_result.history),
         )
         return code_result
 
@@ -201,25 +200,64 @@ class CodeAgent:
         reset_read_tracking()
         full = list(history) + [HumanMessage(content=instruction)]
         logger.info("Continuing with %d history msgs", len(history))
-        result = await self.agent.ainvoke(
-            self._make_state(full),
-            config={"callbacks": [_tool_logger]},
-        )
-        code_result = self._to_code_result(result)
+        code_result = await self._run_with_retry(self._make_state(full))
         logger.info(
-            "Continue response: %.200s | verify_attempts=%d | steps=%d | verify_error=%s | capped=%s",
+            "Continue response: %.200s | capped=%s | failed=%s | history=%d msgs",
             code_result.reply,
-            result.get("verify_attempts", 0),
-            result.get("steps", 0),
-            result.get("verify_error"),
             code_result.capped,
+            code_result.failed,
+            len(code_result.history),
         )
         return code_result
+
+    async def _run_with_retry(self, state: dict) -> CodeResult:
+        last: dict = state
+        for attempt in range(MAX_RUN_RETRIES + 1):
+            resume = dict(state)
+            if attempt > 0:
+                resume = {
+                    "messages": list(last.get("messages", state.get("messages", []))),
+                    "verify_attempts": last.get("verify_attempts", 0),
+                    "verify_error": None,
+                    "steps": last.get("steps", state.get("steps", 0)),
+                    "capped": last.get("capped", False),
+                }
+            collected: dict = {}
+            try:
+                async for chunk in self.agent.astream(
+                    resume,
+                    stream_mode="values",
+                    config={"callbacks": [_tool_logger]},
+                ):
+                    collected = chunk
+                return self._to_code_result(collected)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception(
+                    "CodeAgent run failed (attempt %d/%d)",
+                    attempt + 1,
+                    MAX_RUN_RETRIES + 1,
+                )
+                last = collected or resume
+                if attempt >= MAX_RUN_RETRIES:
+                    return CodeResult(
+                        reply=(
+                            f"The coding agent hit an error after "
+                            f"{MAX_RUN_RETRIES + 1} attempts: {e}"
+                        ),
+                        capped=False,
+                        failed=True,
+                        history=list(last.get("messages", [])),
+                    )
+                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+        return CodeResult(reply="", capped=False, failed=True, history=[])
 
     @staticmethod
     def _to_code_result(result: dict) -> CodeResult:
         return CodeResult(
             reply=extract_agent_reply(result),
             capped=bool(result.get("capped")),
+            failed=False,
             history=list(result.get("messages", [])),
         )

@@ -234,6 +234,23 @@ class BotHandlers:
                 )
                 return
 
+            if result.failed:
+                await self.sessions.set_edit_state(
+                    chat_id,
+                    phase="executing_paused",
+                    instruction=state.instruction,
+                    planner_history=list(state.planner_history),
+                    agent_history=result.history or None,
+                    project_snapshot=project_snapshot,
+                    spec=spec,
+                )
+                await self._reply(
+                    chat_id, context,
+                    "⚠️ " + result.reply
+                    + "\n\nYour progress is saved. Reply 'continue' to try again, or 'cancel' to roll back.",
+                )
+                return
+
             if result.capped:
                 await self.sessions.set_edit_state(
                     chat_id,
@@ -242,6 +259,7 @@ class BotHandlers:
                     planner_history=list(state.planner_history),
                     agent_history=result.history,
                     project_snapshot=project_snapshot,
+                    spec=spec,
                 )
                 await self._reply(
                     chat_id, context,
@@ -332,7 +350,7 @@ class BotHandlers:
         self, chat_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE,
     ):
         state = await self.sessions.get_edit_state(chat_id)
-        if state is None or state.agent_history is None:
+        if state is None:
             await self._reply(
                 chat_id, context,
                 "⏰ Execution session timed out. Start a new /edit if needed.",
@@ -340,20 +358,41 @@ class BotHandlers:
             return
 
         user_text = (update.effective_message.text or "").strip().lower()
-        if user_text in ("continue", "resume", "go on", "keep going"):
+        if user_text in ("continue", "resume", "go on", "keep going", "try again", "retry"):
             await self._reply(chat_id, context, "⚙️ Continuing...")
-            result = await self._with_typing(
-                chat_id, context,
-                self.agent.ainvoke_code_continue(
+            if state.agent_history:
+                coro = self.agent.ainvoke_code_continue(
                     state.agent_history,
                     "Continue implementing the spec. Finish all remaining work, "
                     "then reply with a brief summary.",
-                ),
-            )
+                )
+            else:
+                coro = self.agent.ainvoke_code(
+                    state.spec or state.instruction,
+                    list(state.planner_history),
+                )
+            result = await self._with_typing(chat_id, context, coro)
             if result is None:
                 await self._reply(
                     chat_id, context,
                     "❌ Code Agent failed while continuing.",
+                )
+                return
+
+            if result.failed:
+                await self.sessions.set_edit_state(
+                    chat_id,
+                    phase="executing_paused",
+                    instruction=state.instruction,
+                    planner_history=state.planner_history,
+                    agent_history=result.history or None,
+                    project_snapshot=state.project_snapshot,
+                    spec=state.spec,
+                )
+                await self._reply(
+                    chat_id, context,
+                    "⚠️ " + result.reply
+                    + "\n\nYour progress is saved. Reply 'continue' to try again, or 'cancel' to roll back.",
                 )
                 return
 
@@ -365,6 +404,7 @@ class BotHandlers:
                     planner_history=state.planner_history,
                     agent_history=result.history,
                     project_snapshot=state.project_snapshot,
+                    spec=state.spec,
                 )
                 await self._reply(
                     chat_id, context,
