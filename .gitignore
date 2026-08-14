@@ -12,5 +12,8 @@ wheels/
 # Environments
 .env
 
+# Working scratch
+working/tmp/
+
 # Backups
 backup/*

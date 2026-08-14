@@ -15,7 +15,7 @@ MAX_OUTPUT_LINES = 2000
 MAX_OUTPUT_BYTES = 51200
 DEFAULT_TIMEOUT_MS = 120_000
 
-_IGNORED_DIRS = {".git", ".venv", "__pycache__", "node_modules", "backup"}
+_IGNORED_DIRS = {".git", ".venv", "__pycache__", "node_modules", "backup", "tmp"}
 
 _read_files: set[str] = set()
 
@@ -153,6 +153,12 @@ def glob_tool(pattern: str) -> str:
 - When you are doing an open-ended search that may require multiple rounds of globbing and grepping, prefer batching several searches together.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful."""
     matches = []
+    try:
+        base = Path(pattern)
+        if base.is_absolute():
+            pattern = base.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        pattern = str(Path(pattern)).lstrip("/")
     for p in PROJECT_ROOT.glob(pattern):
         if p.is_dir():
             continue
