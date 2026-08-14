@@ -10,6 +10,11 @@ from telegram.ext import ContextTypes
 from core.agents import verify_working_code
 from core.config import app_config, WORKING_DIR, BACKUP_DIR
 from core.core_agent import CoreAgent
+from core.dependency_sync import (
+    revert_project_files,
+    snapshot_project_files,
+    sync_dependencies,
+)
 from core.session_manager import SessionManager
 from core.telegram_worker.auth import RoleResolver
 
@@ -212,6 +217,7 @@ class BotHandlers:
                 return
 
             self._backup_working()
+            project_snapshot = snapshot_project_files()
 
             code_result = await self._with_typing(
                 chat_id, context,
@@ -225,9 +231,19 @@ class BotHandlers:
                 )
                 return
 
+            sync = await self._sync_dependencies()
+            if not sync.synced and sync.error:
+                self._restore_working()
+                await self._reply(
+                    chat_id, context,
+                    f"❌ Dependency sync failed. Rolled back.\n```\n{sync.error}\n```",
+                )
+                return
+
             error = verify_working_code(WORKING_DIR)
             if error:
                 self._restore_working()
+                await revert_project_files(project_snapshot)
                 await self._reply(
                     chat_id, context,
                     f"❌ Code verification failed. Rolled back.\n```\n{error}\n```",
@@ -238,9 +254,20 @@ class BotHandlers:
                 "role": "assistant",
                 "content": f"Code mutation result: {code_result}",
             })
+            sync_note = ""
+            if sync.synced or sync.kept:
+                parts = []
+                if sync.added:
+                    parts.append(f"Installed: {', '.join(sync.added)}")
+                if sync.removed:
+                    parts.append(f"Removed: {', '.join(sync.removed)}")
+                if sync.kept:
+                    parts.append(f"Kept (still in use): {', '.join(sync.kept)}")
+                if parts:
+                    sync_note = f"\n\n📦 {' | '.join(parts)}"
             await self._reply(
                 chat_id, context,
-                f"✅ Mutation successful. Reloading in-process...\n\n{code_result}",
+                f"✅ Mutation successful. Reloading in-process...{sync_note}\n\n{code_result}",
             )
             logger.info("Mutation successful. Reloading bot components in-process.")
             if self._reload_callback:
@@ -268,6 +295,9 @@ class BotHandlers:
             await self._reply(chat_id, context, reply)
 
     # ── Safety helpers (backup / restore) ────────────────────────────
+
+    async def _sync_dependencies(self):
+        return await sync_dependencies()
 
     def _backup_working(self):
         if BACKUP_DIR.exists():
