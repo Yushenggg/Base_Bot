@@ -228,6 +228,7 @@ class BotHandlers:
             )
             if result is None:
                 self._restore_working()
+                await revert_project_files(project_snapshot)
                 await self._reply(
                     chat_id, context,
                     "❌ Code Agent failed. No changes made. Rolled back.",
@@ -301,6 +302,7 @@ class BotHandlers:
     ) -> None:
         if not code_reply or not code_reply.strip():
             self._restore_working()
+            await revert_project_files(project_snapshot)
             await self._reply(
                 chat_id, context,
                 "❌ Code Agent returned empty — no changes made. Rolled back.",
