@@ -38,7 +38,16 @@ def _is_secret_path(path: Path) -> bool:
     if name == ".env" or name.startswith(".env."):
         return True
     lowered = str(path).lower()
-    return any(marker in lowered for marker in _SECRET_PATH_PARTS)
+    if any(marker in lowered for marker in _SECRET_PATH_PARTS):
+        return True
+    try:
+        from core.auth.secrets import is_auth_secret_path
+
+        if is_auth_secret_path(path):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 @tool

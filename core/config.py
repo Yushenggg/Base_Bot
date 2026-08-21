@@ -30,6 +30,8 @@ class AppConfig(BaseSettings):
 
     database_path: str = Field(default="./telebasebot.db", alias="DATABASE_PATH")
 
+    auth_encryption_key: str | None = Field(default=None, alias="AUTH_ENCRYPTION_KEY")
+
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_format: str = Field(default="console", alias="LOG_FORMAT")
 

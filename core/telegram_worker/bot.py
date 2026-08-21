@@ -13,6 +13,7 @@ from telegram.ext import (
 )
 
 from core import scheduler
+from core import auth
 from core.config import app_config, WORKING_DIR
 from core.core_agent import CoreAgent
 from core.telegram_worker.auth import RoleResolver
@@ -34,6 +35,11 @@ async def _register_commands(application, bot_ref):
 
 class TeleBaseBot:
     def __init__(self):
+        auth.init()
+        try:
+            import core.auth.providers  # noqa: F401
+        except ImportError:
+            pass
         self.agent = CoreAgent()
         self.auth = RoleResolver()
         self.handlers = BotHandlers(self.agent, self.auth, reload_callback=self.reload)
