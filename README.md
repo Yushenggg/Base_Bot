@@ -91,6 +91,22 @@ Notes:
 - The application normalizes this to the client API path when needed.
 - `AUTHORIZED_USER` is a single Telegram user ID that is allowed to interact with the bot (for whitelist management, use a single ID).
 
+> **NOTE — connecting external services (Google, Microsoft, GitHub, etc.) requires additional setup.**
+>
+> The bot can call external APIs on your behalf (e.g. Google Calendar, Gmail,
+> GitHub) via OAuth, but each provider needs to be registered first and your
+> account connected. This is **optional** — if you only want the bot to chat and
+> run local tools, skip it.
+>
+> - **To connect an account** (per-provider setup): `docs/user-auth-<provider>.md`
+>   (e.g. `docs/user-auth-google.md`)
+> - **To add a new provider** (developer): `docs/auth-providers.md`
+>
+> High level: each provider needs a one-time OAuth app registration at the
+> provider's developer console, then either pasting the credentials in via
+> Telegram or adding them to `.env`, then a one-click approval on your phone.
+> Tokens are stored Fernet-encrypted in `data/auth/`.
+
 ## Run the Bot
 
 Start the bot with:
@@ -111,14 +127,17 @@ TeleBaseBot/
 │   ├── core_agent.py           # Agent orchestrator
 │   ├── session_manager.py      # Per-chat session memory and edit state
 │   ├── main_telegram_bot.py    # Telegram bot entry point
+│   ├── scheduler.py            # Job scheduler (persistent, hot-reloadable)
+│   ├── auth/                   # OAuth/SSO engine (provider registration, encrypted token store)
+│   │   └── providers/          # Provider config files (one per provider)
 │   ├── agents/
 │   │   ├── tools.py            # Shared tools (file read, web search, site fetch)
 │   │   ├── logging_handler.py  # Agent callback logger
 │   │   ├── standard_agent/     # Standard chat agent (uses working/tools)
 │   │   ├── plan_agent/         # Requirements planner agent
-│   │   ├── code_agent/         # Code generation agent (writes to working/)
-│   │   │   ├── prompts.py      # System prompt + environment block
-│   │   │   └── tools.py        # Coding tool harness (read/edit/write/glob/grep/bash)
+│   │   └── code_agent/         # Code generation agent (writes to working/)
+│   │       ├── prompts.py      # System prompt + environment block
+│   │       └── tools.py        # Coding tool harness (read/edit/write/glob/grep/bash)
 │   └── telegram_worker/
 │       ├── bot.py              # TeleBaseBot class, command registration, hot-reload
 │       ├── handlers.py         # Message and command handlers
@@ -130,7 +149,19 @@ TeleBaseBot/
 ├── backup/                     # Auto-backup of working/ during code mutations
 ├── base/                       # Pristine base project files (pyproject.toml + uv.lock)
 ├── scripts/                    # restore_base.sh / update_base.sh
+├── docs/                       # User and developer documentation
 ```
+
+## Authentication / connecting external accounts
+
+The bot can call external APIs on your behalf (Google Calendar, Gmail,
+GitHub, etc.) via OAuth/SSO. Tokens are stored Fernet-encrypted in
+`data/auth/` and refreshed automatically.
+
+- **Connecting your accounts** (per-provider setup walkthroughs): `docs/user-auth-<provider>.md`
+  - Google: `docs/user-auth-google.md`
+  - Others: one file per provider as they're added
+- **Adding new providers** (developer guide): `docs/auth-providers.md`
 
 ## How It Works
 
